@@ -12,6 +12,7 @@ This base class provides common functionality for:
 import gc
 import glob
 import os
+import re
 from abc import ABC, abstractmethod
 
 import torch
@@ -238,23 +239,54 @@ class BaseTransformerModel(CompiledMethodsMixin, ABC):
 
         prefixes_to_remove = ["diffusion_model.", "transformer.", "model.diffusion_model."]
 
-        def remove_prefix(key):
-            return_key = key
+        # Regex for Kohya/A1111 format: lora_unet_blocks_{N}_{layer_path}
+        kohya_block_re = re.compile(r"^lora_unet_blocks_(\d+)_(.+)")
+
+        def _convert_kohya_key(key):
+            """Convert a Kohya-format key to dotted format.
+
+            Example: lora_unet_blocks_0_cross_attn_k.lora_down.weight
+                  -> blocks.0.cross_attn.k.lora_down.weight
+            """
+            # Split at the first dot to separate the base from the suffix (.lora_down.weight, .alpha, etc.)
+            dot_idx = key.find(".")
+            if dot_idx == -1:
+                base, suffix = key, ""
+            else:
+                base, suffix = key[:dot_idx], key[dot_idx:]
+
+            m = kohya_block_re.match(base)
+            if not m:
+                return key
+            block_idx, layer_path = m.group(1), m.group(2)
+            # Replace the last underscore with a dot to separate component from subcomponent
+            # e.g. cross_attn_k -> cross_attn.k, ffn_0 -> ffn.0
+            last_us = layer_path.rfind("_")
+            if last_us != -1:
+                layer_path = layer_path[:last_us] + "." + layer_path[last_us + 1 :]
+            return f"blocks.{block_idx}.{layer_path}{suffix}"
+
+        def normalize_key(key):
+            # Handle Kohya/A1111 format (lora_unet_ prefix with underscored names)
+            if key.startswith("lora_unet_"):
+                return _convert_kohya_key(key)
+            # Handle standard prefixed format
             for prefix in prefixes_to_remove:
                 if key.startswith(prefix):
-                    return_key = key[len(prefix) :]
-            if "lora_A" in return_key:
-                return_key = return_key.replace("lora_A", "lora_down")
-            if "lora_B" in return_key:
-                return_key = return_key.replace("lora_B", "lora_up")
-            return return_key
+                    key = key[len(prefix):]
+                    break
+            if "lora_A" in key:
+                key = key.replace("lora_A", "lora_down")
+            if "lora_B" in key:
+                key = key.replace("lora_B", "lora_up")
+            return key
 
         if device == "cpu":
             with safe_open(file_path, framework="pt", device=device) as f:
-                tensor_dict = {remove_prefix(key): f.get_tensor(key).to(GET_DTYPE()).pin_memory() for key in f.keys()}
+                tensor_dict = {normalize_key(key): f.get_tensor(key).to(GET_DTYPE()).pin_memory() for key in f.keys()}
         else:
             with safe_open(file_path, framework="pt", device=device) as f:
-                tensor_dict = {remove_prefix(key): f.get_tensor(key).to(GET_DTYPE()) for key in f.keys()}
+                tensor_dict = {normalize_key(key): f.get_tensor(key).to(GET_DTYPE()) for key in f.keys()}
         return tensor_dict
 
     def _register_lora(self, lora_path, strength):

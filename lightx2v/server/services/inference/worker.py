@@ -21,8 +21,13 @@ class TorchrunInferenceWorker:
         self.dist_manager = DistributedManager()
         self.processing = False
         self.lora_dir = None
+        self.is_moe_runner = False
         self.current_lora_name = None
         self.current_lora_strength = None
+        self.current_high_lora_name = None
+        self.current_high_lora_strength = None
+        self.current_low_lora_name = None
+        self.current_low_lora_strength = None
 
     def init(self, args) -> bool:
         try:
@@ -55,6 +60,9 @@ class TorchrunInferenceWorker:
             self.runner = init_runner(config)
             logger.info(f"Rank {self.rank}/{self.world_size - 1} initialization completed")
 
+            # Detect MoE runner
+            self.is_moe_runner = "moe" in config.get("model_cls", "")
+
             self.input_info = init_empty_input_info(args.task)
 
             return True
@@ -74,8 +82,14 @@ class TorchrunInferenceWorker:
             # Handle dynamic LoRA loading
             lora_name = task_data.pop("lora_name", None)
             lora_strength = task_data.pop("lora_strength", 1.0)
+            high_lora_name = task_data.pop("high_lora_name", None)
+            high_lora_strength = task_data.pop("high_lora_strength", 1.0)
+            low_lora_name = task_data.pop("low_lora_name", None)
+            low_lora_strength = task_data.pop("low_lora_strength", 1.0)
 
-            if self.lora_dir:
+            if self.is_moe_runner:
+                self.switch_moe_lora(high_lora_name, high_lora_strength, low_lora_name, low_lora_strength)
+            elif self.lora_dir:
                 self.switch_lora(lora_name, lora_strength)
 
             task_data["task"] = self.runner.config["task"]
@@ -124,37 +138,96 @@ class TorchrunInferenceWorker:
             return None
 
     def switch_lora(self, lora_name: str, lora_strength: float):
+        """Switch LoRA for single-model (non-MoE) runners."""
         try:
-            if lora_name is None:
-                if self.current_lora_name is not None:
-                    logger.info(f"Removing LoRA: {self.current_lora_name}")
-                    if hasattr(self.runner.model, "_remove_lora"):
-                        self.runner.model._remove_lora()
-                    self.current_lora_name = None
-                    if hasattr(self, "current_lora_strength"):
-                        del self.current_lora_strength
+            if lora_name == self.current_lora_name and lora_strength == self.current_lora_strength:
                 return
 
-            current_strength = getattr(self, "current_lora_strength", None)
+            model = self.runner.model
+            # Always remove old LoRA first (safe even if none was registered)
+            model._remove_lora()
 
-            if lora_name != self.current_lora_name or lora_strength != current_strength:
+            if lora_name is not None:
                 lora_path = self._lora_path(lora_name)
                 if lora_path is None:
-                    logger.warning(f"LoRA file not found for: {lora_name}")
+                    logger.warning(f"LoRA file not found: {lora_name}")
+                    self.current_lora_name = None
+                    self.current_lora_strength = None
                     return
+                logger.info(f"Applying LoRA: {lora_name} (strength={lora_strength})")
+                model._register_lora(lora_path, lora_strength)
+            else:
+                logger.info("LoRA disabled")
 
-                logger.info(f"Applying LoRA: {lora_name} from {lora_path} with strength={lora_strength}")
-                if hasattr(self.runner.model, "_update_lora"):
-                    self.runner.model._update_lora(lora_path, lora_strength)
-                    self.current_lora_name = lora_name
-                    self.current_lora_strength = lora_strength
-                    logger.info(f"LoRA applied successfully: {lora_name}")
-                else:
-                    logger.warning("Model does not support dynamic LoRA loading")
+            self.current_lora_name = lora_name
+            self.current_lora_strength = lora_strength
 
         except Exception as e:
             logger.error(f"Failed to handle LoRA switching: {e}")
             raise
+
+    def switch_moe_lora(self, high_lora_name, high_lora_strength,
+                         low_lora_name, low_lora_strength):
+        """Switch LoRA weights for MoE models with separate high/low noise models."""
+        try:
+            high_changed = (high_lora_name != self.current_high_lora_name
+                            or high_lora_strength != self.current_high_lora_strength)
+            low_changed = (low_lora_name != self.current_low_lora_name
+                           or low_lora_strength != self.current_low_lora_strength)
+
+            if not high_changed and not low_changed:
+                return
+
+            high_model = self.runner.model.model[0]
+            low_model = self.runner.model.model[1]
+
+            if high_changed:
+                self._switch_sub_model_lora(high_model, "high-noise", high_lora_name, high_lora_strength)
+                self.current_high_lora_name = high_lora_name
+                self.current_high_lora_strength = high_lora_strength
+
+            if low_changed:
+                self._switch_sub_model_lora(low_model, "low-noise", low_lora_name, low_lora_strength)
+                self.current_low_lora_name = low_lora_name
+                self.current_low_lora_strength = low_lora_strength
+
+            logger.info("MoE LoRA switch completed")
+
+        except Exception as e:
+            logger.error(f"Failed to handle MoE LoRA switching: {e}")
+            raise
+
+    def _switch_sub_model_lora(self, sub_model, label, lora_name, lora_strength):
+        """Switch or disable LoRA on a single sub-model.
+
+        Fully removes old LoRA (if any) and registers a new one from scratch.
+        register_lora/remove_lora recurse through all sub-modules including
+        the offload CUDA buffers, so no separate handling is needed.
+        """
+        if sub_model is None:
+            return
+
+        # Always remove old LoRA first (safe even if none was registered)
+        sub_model._remove_lora()
+
+        if lora_name is not None:
+            lora_path = self._lora_path(lora_name)
+            if lora_path is None:
+                logger.warning(f"{label} LoRA file not found: {lora_name}")
+                self._invalidate_offload_buffer(sub_model)
+                return
+            logger.info(f"Switching {label} LoRA to: {lora_name} (strength={lora_strength})")
+            sub_model._register_lora(lora_path, lora_strength)
+        else:
+            logger.info(f"Disabled {label} LoRA")
+
+        self._invalidate_offload_buffer(sub_model)
+
+    def _invalidate_offload_buffer(self, sub_model):
+        """Force the offload manager to re-copy block 0 on next inference."""
+        infer = getattr(sub_model, "transformer_infer", None)
+        if infer and hasattr(infer, "offload_manager"):
+            infer.offload_manager.need_init_first_buffer = True
 
     def _lora_path(self, lora_name: str) -> str:
         if not self.lora_dir:

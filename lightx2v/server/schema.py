@@ -27,6 +27,10 @@ class BaseTaskRequest(BaseModel):
     target_shape: list[int] = Field([], description="Return video or image shape")
     lora_name: Optional[str] = Field(None, description="LoRA filename to load from lora_dir, None to disable LoRA")
     lora_strength: float = Field(1.0, description="LoRA strength")
+    high_lora_name: Optional[str] = Field(None, description="High-noise model LoRA filename (MoE models), None to disable")
+    high_lora_strength: float = Field(1.0, description="High-noise model LoRA strength")
+    low_lora_name: Optional[str] = Field(None, description="Low-noise model LoRA filename (MoE models), None to disable")
+    low_lora_strength: float = Field(1.0, description="Low-noise model LoRA strength")
 
     def __init__(self, **data):
         super().__init__(**data)

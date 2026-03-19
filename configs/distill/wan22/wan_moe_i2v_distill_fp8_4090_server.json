@@ -1,0 +1,37 @@
+{
+    "infer_steps": 4,
+    "target_video_length": 81,
+    "text_len": 512,
+    "target_height": 480,
+    "target_width": 832,
+    "self_attn_1_type": "sage_attn2",
+    "cross_attn_1_type": "sage_attn2",
+    "cross_attn_2_type": "sage_attn2",
+    "sample_guide_scale": [
+        3.5,
+        3.5
+    ],
+    "sample_shift": 5.0,
+    "enable_cfg": false,
+    "cpu_offload": true,
+    "offload_granularity": "block",
+    "t5_cpu_offload": false,
+    "vae_cpu_offload": false,
+    "use_image_encoder": false,
+    "boundary_step_index": 2,
+    "denoising_step_list": [
+        1000,
+        750,
+        500,
+        250
+    ],
+    "dit_quantized": true,
+    "dit_quant_scheme": "fp8-q8f",
+    "t5_quantized": true,
+    "t5_quant_scheme": "fp8-q8f",
+    "rope_type": "flashinfer",
+    "t5_quantized_ckpt": "models/models_t5_umt5-xxl-enc-fp8.safetensors",
+    "high_noise_quantized_ckpt": "models/wan2.2_i2v_A14b_high_noise_scaled_fp8_e4m3_lightx2v_4step_1030.safetensors",
+    "low_noise_quantized_ckpt": "models/wan2.2_i2v_A14b_low_noise_scaled_fp8_e4m3_lightx2v_4step.safetensors",
+    "vae_path": "models/Wan2.1_VAE.pth"
+}
