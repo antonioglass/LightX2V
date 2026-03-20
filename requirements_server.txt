@@ -16,3 +16,4 @@ uvicorn
 fastapi
 python-multipart
 flashinfer-python
+prometheus_client
