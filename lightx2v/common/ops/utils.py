@@ -81,10 +81,25 @@ def create_pin_tensor(tensor, transpose=False, dtype=None):
         dtype: Target data type of the pinned tensor (optional, defaults to source tensor's dtype)
 
     Returns:
-        Pinned memory tensor (on CPU) with optional transposition applied
+        Pinned memory tensor (on CPU) with optional transposition applied.
+        Falls back to regular CPU memory when cudaHostAlloc fails (e.g.
+        restricted memlock ulimit in containerised environments).
     """
     dtype = dtype or tensor.dtype
-    pin_tensor = torch.empty(tensor.shape, pin_memory=True, dtype=dtype)
+    try:
+        pin_tensor = torch.empty(tensor.shape, pin_memory=True, dtype=dtype)
+    except RuntimeError:
+        # cudaHostAlloc can fail when the Docker memlock ulimit is too low
+        # or GPU BAR resources are exhausted.  Fall back to plain CPU memory
+        # so the worker can still start (transfers will be slightly slower).
+        if not getattr(create_pin_tensor, "_warned", False):
+            import logging
+            logging.getLogger(__name__).warning(
+                "pin_memory=True failed — falling back to non-pinned CPU tensors. "
+                "CPU→GPU transfers during offloaded inference will be slower."
+            )
+            create_pin_tensor._warned = True
+        pin_tensor = torch.empty(tensor.shape, dtype=dtype)
     pin_tensor = pin_tensor.copy_(tensor)
     if transpose:
         pin_tensor = pin_tensor.t()
