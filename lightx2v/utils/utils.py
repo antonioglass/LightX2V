@@ -233,6 +233,9 @@ def save_to_video(
     """
     assert images.dim() == 4 and images.shape[-1] == 3, "Input must be [N, H, W, C] with C=3"
 
+    ffmpeg_preset = os.environ.get("FFMPEG_PRESET", "ultrafast")
+    ffmpeg_threads = os.environ.get("FFMPEG_THREADS", "0")
+
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -274,11 +277,13 @@ def save_to_video(
                 "-loglevel",
                 "error",
                 "-threads",
-                "4",
+                ffmpeg_threads,
                 "-i",
                 "-",  # Input from pipe
                 "-vcodec",
                 "libx264rgb",
+                "-preset",
+                ffmpeg_preset,
                 "-crf",
                 "0",
                 "-an",  # No audio
@@ -299,11 +304,13 @@ def save_to_video(
                 "-loglevel",
                 "error",
                 "-threads",
-                "4",
+                ffmpeg_threads,
                 "-i",
                 "-",  # Input from pipe
                 "-vcodec",
                 "libx264",
+                "-preset",
+                ffmpeg_preset,
                 "-pix_fmt",
                 output_pix_fmt,
                 "-an",  # No audio
