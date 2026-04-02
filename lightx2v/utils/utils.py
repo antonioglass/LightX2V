@@ -233,7 +233,7 @@ def save_to_video(
     """
     assert images.dim() == 4 and images.shape[-1] == 3, "Input must be [N, H, W, C] with C=3"
 
-    ffmpeg_preset = os.environ.get("FFMPEG_PRESET", "ultrafast")
+    ffmpeg_preset = os.environ.get("FFMPEG_PRESET", "medium")
     ffmpeg_threads = os.environ.get("FFMPEG_THREADS", "0")
 
     # Ensure output directory exists
